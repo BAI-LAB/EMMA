@@ -1,85 +1,102 @@
-# EMMA: Event-Driven Multimodal Memory System with Multi-Agent Retrieval
+<h1 align="center">EMMA</h1>
 
-EMMA builds an event-driven memory hierarchy for long videos and uses
-multi-round retrieval to answer video questions. The public release has two
-independent stages:
+<p align="center">
+  <strong>Event-Driven Multimodal Memory System with Multi-Agent Retrieval</strong>
+</p>
 
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#build-event-driven-memory">Build memory</a> ·
+  <a href="#run-question-answering">Run question answering</a> ·
+  <a href="#paper">Paper</a>
+</p>
+
+<p align="center">
+  <img src="assets/emma-overview.png" alt="Figure 1: EMMA Framework overview, showing event-memory segmentation, hierarchical memory construction, and multi-agent memory retrieval." width="100%">
+</p>
+
+EMMA is an event-driven memory system for answering questions about long videos.
+It transforms video and speech into a hierarchy of short-term, medium-term, and
+event memories, then uses grounded, multi-round retrieval to locate evidence
+before producing an answer.
+
+## Paper
+
+Read the accompanying paper: [EMMA.pdf](assets/EMMA.pdf).
+
+## Quick start
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/BAI-LAB/EMMA.git
+cd EMMA
 ```
-Stage 1 · Memory Building   video → ASR → STM / MTM / Event Table
-Stage 2 · KQA               memory + question → multi-round retrieval → answer
-```
 
-The reference configuration uses local Qwen3-VL-8B-Instruct for visual memory
-construction and raw-video fallback; DeepSeek-V4-Flash for memory text
-reasoning, retrieval planning, and validation; `text-embedding-3-large` for
-text retrieval; and DeepSeek R1 for final answers.
+### 2. Create the environment
 
-## Requirements
-
-- Python 3.10+
-- `ffmpeg` on `PATH` (for example, `apt install ffmpeg`)
-- API access to an OpenAI-compatible DeepSeek and text-embedding endpoint
-
-Install a compatible PyTorch build, then install the remaining packages:
+EMMA requires Python 3.10+, `ffmpeg`, and a CUDA-capable environment suitable
+for the local vision-language model you choose. Install a compatible PyTorch
+build first, then install the remaining dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Download these local models separately; model weights, videos, and outputs are
-not included in this repository.
-
-| Model | Role | Required format |
-|---|---|---|
-| Qwen3-VL-8B-Instruct | VLM memory construction and video fallback | Hugging Face checkpoint |
-| whisper-large-v3-turbo | ASR | CTranslate2 / faster-whisper checkpoint |
-
-To convert an existing Hugging Face Whisper checkpoint once (CPU is sufficient):
+Prepare the local ASR and vision-language model checkpoints separately; they
+are not included in this repository. The ASR checkpoint must be in a
+faster-whisper/CTranslate2-compatible format. To convert a Hugging Face Whisper
+checkpoint once:
 
 ```bash
-ct2-transformers-converter --model /path/to/whisper-large-v3-turbo --output_dir /path/to/whisper-large-v3-turbo-ct2 --quantization float16 --copy_files tokenizer.json preprocessor_config.json
+ct2-transformers-converter \
+  --model /path/to/whisper-checkpoint \
+  --output_dir /path/to/whisper-ct2 \
+  --quantization float16 \
+  --copy_files tokenizer.json preprocessor_config.json
 ```
 
-## Configuration
+### 3. Configure credentials and endpoints
 
-Copy the examples; never commit the resulting `.env` files.
+Copy the example files and fill in your API credentials, OpenAI-compatible
+endpoints, and model settings. Do not commit the resulting `.env` files.
 
 ```bash
 cp memory/.env.example memory/.env
 cp KQA/project/.env.example KQA/project/.env
 ```
 
-Set your own credentials and OpenAI-compatible endpoint in both files.  The
-default memory text model is `deepseek-v4-flash`.  The public KQA configuration
-is [`KQA/project/configs/deepseek_v4_flash_r1.yaml`](KQA/project/configs/deepseek_v4_flash_r1.yaml);
-it uses `deepseek-v4-flash`, `text-embedding-3-large`, and
-`ark-deepseek-r1-250528` respectively.  Adjust the model identifiers only if
-your provider uses different aliases.
+On Windows PowerShell, use:
 
-## Stage 1 — Memory building
+```powershell
+Copy-Item memory/.env.example memory/.env
+Copy-Item KQA/project/.env.example KQA/project/.env
+```
 
-`memory/run_memory.py` is the supported entry point. It first runs
-faster-whisper/CTranslate2 ASR, then lets that process exit before starting a
-local Qwen vLLM server. Qwen remains resident across all videos, so the report
-separates startup time from per-video steady-state time.
+## Build event-driven memory
+
+Run the memory builder on a directory of videos. It transcribes audio, builds
+short- and medium-term memories, and creates an event table. The local
+vision-language model remains available across videos, so its startup cost is
+reported separately from steady-state per-video processing time.
 
 ```bash
 python memory/run_memory.py \
   --input-dir /path/to/videos \
   --output-root /path/to/memory-results \
-  --asr-model-dir /path/to/whisper-large-v3-turbo-ct2 \
-  --qwen-model /path/to/Qwen3-VL-8B-Instruct \
+  --asr-model-dir /path/to/whisper-ct2 \
+  --qwen-model /path/to/vision-language-model \
   --device-id 0 \
   --fail-fast
 ```
 
 For a reproducible subset, create a text file containing one absolute video
-path (or one video filename) per line and pass `--video-list /path/to/list.txt`.
-Use `--rerun-asr` when ASR should be measured again rather than reused.
+path (or video filename) per line and add `--video-list /path/to/list.txt`.
+Use `--rerun-asr` to measure ASR again instead of reusing existing transcripts.
 
-Outputs for each video are written to:
+Each processed video creates the following output tree:
 
-```
+```text
 {output_root}/{video_name}/outputs/
 ├── asr_segments.json
 ├── chapter_segmentation.json
@@ -88,61 +105,62 @@ Outputs for each video are written to:
 └── event_table.json
 ```
 
-Timing reports are written to
-`{output_root}/_runs/<timestamp>/summary.json` and
-`per_video_timings.json`.  `memory_build` and each `videos[].seconds` value
-exclude ASR and Qwen server startup, which is the useful production latency
-when Qwen is already resident.
+Run-level timing reports are saved under
+`{output_root}/_runs/<timestamp>/summary.json` and `per_video_timings.json`.
 
-## Stage 2 — KQA
+## Run question answering
 
-The KQA runner starts one Qwen vLLM server for RAW_VIDEO fallback and runs
-questions sequentially. It reads the Stage 1 output tree via `--results-root`.
+Point the KQA runner to the Stage 1 memory results, raw videos, and a benchmark
+question file. The runner processes questions sequentially and starts a local
+vision-language server only when raw-video evidence is needed.
 
 ```bash
 python KQA/project/run_batch.py \
   --videomme-json /path/to/videomme.json \
   --results-root /path/to/memory-results \
   --raw-video-root /path/to/videos \
-  --qwen-model /path/to/Qwen3-VL-8B-Instruct \
+  --qwen-model /path/to/vision-language-model \
   --device-id 0
 ```
 
-Use `--question-id <id>` or `--max-questions 1` for a smoke test.  Results,
-traces, errors, and a timing summary are written under
-`KQA/project/outputs/batch_<timestamp>/` unless `--out-root` is supplied.
+Use `--question-id <id>` or `--max-questions 1` for a smoke test. Results,
+retrieval traces, errors, and a timing summary are written to
+`KQA/project/outputs/batch_<timestamp>/` unless `--out-root` is provided.
 
-## Retrieval policy in the reference configuration
+## Retrieval workflow
 
-EMMA uses a grounded coarse-to-fine route: MTM localization, then STM or
-RAW_VIDEO evidence before early termination.  After two stalled or insufficient
-rounds, it forces the escalation `MTM → STM → RAW_VIDEO`; a no-evidence run
-uses a closest-candidate fallback over 15 MTM and 25 STM memories.  This is the
-core retrieval-control strategy carried into the public reference configuration.
+EMMA follows a grounded coarse-to-fine route:
 
-## Project structure
+1. Localize likely events in medium-term memory.
+2. Retrieve short-term memory evidence for the candidate moments.
+3. Escalate to raw video when the memory evidence is insufficient.
+4. Stop as soon as the retrieved evidence supports a reliable answer.
 
-```
+After repeated stalled rounds, the system automatically escalates from
+medium-term memory to short-term memory and then raw-video evidence. A
+closest-candidate fallback keeps retrieval grounded when no direct evidence is
+found.
+
+## Repository layout
+
+```text
 EMMA/
-├── memory/
-│   ├── ASR.py                 # faster-whisper / CTranslate2 ASR
-│   ├── run_memory.py          # supported memory runner
-│   ├── AIO.py                 # memory construction pipeline
-│   ├── chapter.py             # chapter segmentation
+├── assets/                    # README and paper assets
+├── memory/                    # ASR and event-driven memory construction
+│   ├── run_memory.py           # Stage 1 entry point
 │   └── .env.example
-├── KQA/project/
-│   ├── run_batch.py           # supported KQA runner
-│   ├── configs/deepseek_v4_flash_r1.yaml
-│   ├── src/                   # retrieval agents, pipeline, and utilities
+├── KQA/project/                # Multi-agent question answering
+│   ├── run_batch.py            # Stage 2 entry point
+│   ├── configs/                # Runtime configurations
 │   └── .env.example
 ├── qwen_vl_utils.py
 ├── requirements.txt
-└── LICENSE                    # Apache-2.0
+└── LICENSE
 ```
 
 ## Notes
 
-- `.env`, datasets, model checkpoints, generated outputs, and logs are ignored
-  by Git.  Scan your working tree before every public push.
-- The supplied runner releases Whisper before starting Qwen to reduce model
-  residency pressure.
+- `.env` files, datasets, model checkpoints, generated outputs, and logs are
+  ignored by Git. Review `git status` before every public push.
+- The supplied memory runner releases the ASR model before starting the local
+  vision-language server to reduce model residency pressure.
